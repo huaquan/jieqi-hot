@@ -1,0 +1,38 @@
+name: Update Hot Data
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'
+  push:
+    branches:
+      - master
+
+jobs:
+  update:
+    image: node:20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: npm install axios xml2js
+
+      - name: Fetch and parse RSS feeds
+        run: node scripts/aggregate.js
+
+      - name: Commit changes
+        run: |
+          git config --global user.name 'Gitee Go'
+          git config --global user.email 'gitee@example.com'
+          git add public/hot.json
+          git commit -m "Update hot data $(date +'%Y-%m-%d %H:%M:%S')"
+          git push
+
+      - name: Redeploy Gitee Pages
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: token $GITEE_TOKEN" \
+            "https://gitee.com/api/v5/repos/$GITEE_USER/$GITEE_REPO/pages/builds"
