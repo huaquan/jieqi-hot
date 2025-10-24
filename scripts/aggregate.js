@@ -1,71 +1,63 @@
-const axios = require('axios');
-const xml2js = require('xml2js');
-const fs = require('fs');
-const path = require('path');
+/**
+ * aggregate.js
+ * 聚合 4 个 JSON 格式热榜 → public/hot.json
+ * GitHub Actions 每 4 小时调用一次
+ */
+import fs from 'fs';
+import axios from 'axios';
 
-const rssFeeds = [
-  { name: 'sina', url: 'http://rss.sina.com.cn/news/allnews/sports.xml' },
-  { name: 'baidu', url: 'https://tieba.baidu.com/hottopic/browse/topicList' },
-  { name: '36kr', url: 'https://36kr.com/feed' },
-  { name: 'zhihu', url: 'https://www.zhihu.com/rss' }
+const SOURCES = [
+  { name: '新浪新闻', url: 'https://rsshub.rssforever.com/sina/news?format=json' },
+  { name: '百度热搜', url: 'https://rsshub.rssforever.com/baidu/tieba/hot?format=json' },
+  { name: '36Kr 快讯', url: 'https://rsshub.rssforever.com/36kr/newsflashes?format=json' },
+  { name: '知乎热榜', url: 'https://rsshub.rssforever.com/zhihu/hot?format=json' }
 ];
 
-const parseXml = async (xml) => {
-  return new Promise((resolve, reject) => {
-    xml2js.parseString(xml, (err, result) => {
-      if (err) reject(err);
-      else resolve(result);
-    });
-  });
-};
+const MAX = 50;                          // 最多保留 50 条
+const DESC_LEN = 90;                     // 导语长度
 
-const fetchRss = async (url) => {
-  try {
-    const response = await axios.get(url);
-    return response.data;
-  } catch (error) {
-    console.error(`Failed to fetch ${url}: ${error.message}`);
-    return null;
-  }
-};
+(async () => {
+  let all = [];
 
-const processFeeds = async () => {
-  const fetchPromises = rssFeeds.map(async (feed) => {
-    const xml = await fetchRss(feed.url);
-    if (xml) {
-      const parsed = await parseXml(xml);
-      return parsed.rss.channel[0].item.map(item => ({
-        ...item,
-        source: feed.name
-      }));
-    }
-    return [];
-  });
+  // 并发拉取
+  await Promise.all(
+    SOURCES.map(async ({ name, url }) => {
+      try {
+        const { data } = await axios.get(url, { timeout: 8000 });
+        // RSSHub JSON 格式: data.items || data.data
+        const items = (data.items || data.data || []).slice(0, 15);
+        all.push(
+          ...items.map((it) => ({
+            title: it.title?.trim() || '',
+            link: it.link || it.url || '',
+            desc: (it.description || it.summary || '')
+              .replace(/<[^>]+>/g, '')        // 去 HTML 标签
+              .slice(0, DESC_LEN),
+            source: name,
+            ts: new Date(it.pubDate || it.created || it.date || Date.now()).toISOString()
+          }))
+        );
+      } catch (e) {
+        console.warn(`❌ ${name} 抓取失败`, e.message);
+      }
+    })
+  );
 
-  const results = await Promise.all(fetchPromises);
-  const mergedItems = results.flat();
+  // 去重 + 排序 + 截断
+  const seen = new Set();
+  const dedup = all
+    .filter((it) => it.title)
+    .filter((it) => {
+      const key = it.title.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => new Date(b.ts) - new Date(a.ts))
+    .slice(0, MAX);
 
-  // Deduplicate by title
-  const uniqueItems = mergedItems.reduce((acc, item) => {
-    const existingItem = acc.find(i => i.title[0] === item.title[0]);
-    if (!existingItem) acc.push(item);
-    return acc;
-  }, []);
-
-  // Sort by pubDate (descending)
-  uniqueItems.sort((a, b) => {
-    const dateA = new Date(a.pubDate[0]);
-    const dateB = new Date(b.pubDate[0]);
-    return dateB - dateA;
-  });
-
-  // Limit to 50 items
-  const topItems = uniqueItems.slice(0, 50);
-
-  // Write to file
-  const outputDir = path.join(__dirname, '../public');
-  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-  fs.writeFileSync(path.join(outputDir, 'hot.json'), JSON.stringify(topItems, null, 2));
-};
-
-processFeeds().catch(console.error);
+  // 写文件
+  fs.mkdirSync('public', { recursive: true });
+  fs.writeFileSync('public/hot.json', JSON.stringify(dedup, null, 2));
+  console.log(`✅ 已写入 ${dedup.length} 条热点`);
+})();

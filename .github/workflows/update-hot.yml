@@ -81,3 +81,36 @@ jobs:
           git add public/hot.json
           git commit -m "Update hot data $(date +'%Y-%m-%d %H:%M:%S')"
           git push
+name: Update Hot Data
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'   # 每 4 小时
+  workflow_dispatch:        # 手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # 推送 hot.json 回仓库
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install axios
+
+      - name: Fetch & Merge
+        run: node scripts/aggregate.js
+
+      - name: Commit & Push
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update hot.json $(date -u +%F_%H:%M)"
+          file_pattern: public/hot.json
